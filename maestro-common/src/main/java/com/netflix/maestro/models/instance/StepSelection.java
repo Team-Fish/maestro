@@ -20,20 +20,22 @@ import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonNaming;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
 import com.netflix.maestro.annotations.Nullable;
+import com.netflix.maestro.utils.Checks;
 import jakarta.validation.Valid;
+import java.util.ArrayList;
+import java.util.List;
 import lombok.Builder;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
-import lombok.ToString;
 
 /**
  * Chooses which steps of a run actually execute. A step runs when {@code include} matches it and
  * {@code exclude} does not; every other step is marked {@link StepInstance.Status#SKIPPED} while
  * the DAG itself is left intact, so successors still evaluate their conditions against it.
  *
- * <p>An unset or empty {@code include} matches every step, so specifying only {@code exclude} skips
- * just the matched steps. Specifying only {@code include} skips everything it does not match.
- * {@code exclude} always wins over {@code include}.
+ * <p>With only {@code include} set, the run skips every step it does not match. With only {@code
+ * exclude} set, the run skips only the steps it matches. With both set, {@code exclude} wins. Each
+ * selector that is set carries at least one criterion.
  *
  * <p>The selection applies at every level of a run, including the inline workflows created by
  * foreach steps and the workflows started by subworkflow steps, and is matched against the step ids
@@ -48,26 +50,42 @@ import lombok.ToString;
 @Builder(toBuilder = true)
 @Getter
 @EqualsAndHashCode
-@ToString
 public class StepSelection {
-  /** Steps to run. Unset or empty means every step. */
+  /** Steps to run. When null, only {@link #exclude} skips steps. */
   @Nullable @Valid private final StepSelector include;
 
-  /** Steps to skip. Applied after {@link #include} and overrides it. */
+  /** Steps to skip. This overrides {@link #include}. */
   @Nullable @Valid private final StepSelector exclude;
+
+  StepSelection(@Nullable StepSelector include, @Nullable StepSelector exclude) {
+    Checks.checkTrue(
+        include != null || exclude != null, "Step selection must set include or exclude or both");
+    this.include = include;
+    this.exclude = exclude;
+  }
 
   /** Whether the given step id should be skipped under this selection. */
   @JsonIgnore
   public boolean isSkipped(String stepId) {
-    boolean included = include == null || include.isEmpty() || include.matches(stepId);
+    boolean included = include == null || include.matches(stepId);
     boolean excluded = exclude != null && exclude.matches(stepId);
     return !included || excluded;
   }
 
-  /** Whether this selection carries no criteria and therefore skips nothing. */
+  /**
+   * Returns a sentence for the run timeline, e.g. {@code excludes steps matching ids [s1]}. It
+   * names only the criteria that are set.
+   */
   @JsonIgnore
-  public boolean isEmpty() {
-    return (include == null || include.isEmpty()) && (exclude == null || exclude.isEmpty());
+  public String describe() {
+    List<String> clauses = new ArrayList<>();
+    if (include != null) {
+      clauses.add("includes only steps matching " + include.describe());
+    }
+    if (exclude != null) {
+      clauses.add("excludes steps matching " + exclude.describe());
+    }
+    return String.join(", and ", clauses);
   }
 
   /** builder class for lombok and jackson. */
